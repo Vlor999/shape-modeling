@@ -1,0 +1,9 @@
+.venv
+.env
+.idea
+uv.lock
+
+# models
+*.npz
+*.pt
+*.npy
