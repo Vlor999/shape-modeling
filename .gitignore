@@ -7,3 +7,4 @@ uv.lock
 *.npz
 *.pt
 *.npy
+.DS_Store
