@@ -41,7 +41,7 @@ calib = np.array([
 # Training
 MAX_EPOCH = 10
 BATCH_SIZE = 256
-NUM_RANDOM_POINTS = 10_000_000
+NUM_RANDOM_POINTS = 1_000_000
 
 # Build 3D grids
 # 3D Grids are of size resolution x resolution x resolution/2
@@ -57,6 +57,93 @@ X, Y, Z = np.mgrid[-1:1:step, -1:1:step, -0.5:0.5:step]
 # # Voxels are initially occupied then carved with silhouette information
 # occupancy.fill(1)
 occupancy = np.load("occupancy.npy")
+
+def reduce_outside_occupancy(occ: np.ndarray, threshold: int | float = 1) -> tuple[np.ndarray, dict]:
+    """Reduce the number of outside occupancy.
+    
+    To do so we are going to look if some layers can be erase:
+        - if a plan(xy, xz, yz) is full of 0 and is a start we can erase it
+    
+    Args:
+        - occ (np.ndarray): represente if a pixel is here or not
+    
+    Return:
+        - np.ndarray: must represent the same object but with smaller dimensions
+        - dict: bounds info with keys 'x_bounds', 'y_bounds', 'z_bounds', 'original_shape'
+    """
+    nl, nc, nz = occ.shape
+    start_x, end_x = 0, nl
+    start_y, end_y = 0, nc
+    start_z, end_z = 0, nz
+    
+    for z in range(nz):
+        plan_xy = occ[:, :, z]
+        value = np.sum(plan_xy)
+        if value > threshold:
+            start_z = z
+            break
+    for z in range(nz - 1, -1, -1):
+        plan_xy = occ[:, :, z]
+        value = np.sum(plan_xy)
+        if value > threshold:
+            end_z = z
+            break
+
+    for y in range(nl):
+        plan_xz = occ[:, y, :]
+        value = np.sum(plan_xz)
+        if value > threshold:
+            start_y = y
+            break
+    for y in range(nl - 1, -1, -1):
+        plan_xz = occ[:, y, :]
+        value = np.sum(plan_xz)
+        if value > threshold:
+            end_y = y
+            break
+
+    for x in range(nc):
+        plan_yz = occ[x, :, :]
+        value = np.sum(plan_yz)
+        if value > threshold:
+            start_x = x
+            break
+    for x in range(nc - 1, -1, -1):
+        plan_yz = occ[x, :, :]
+        value = np.sum(plan_yz)
+        if value > threshold:
+            end_x = x
+            break
+    
+    updated_occ = occ[start_x:end_x + 1, start_y:end_y + 1, start_z:end_z + 1]
+    nb_voxels = np.prod(occ.shape)
+    new_nb_voxels = np.prod(updated_occ.shape)
+    print(f"deleted pixels: {100 * (nb_voxels - new_nb_voxels) / nb_voxels:3f}%")
+    
+    # Compute the new bounds in normalized coordinates
+    orig_nl, orig_nc, orig_nz = occ.shape
+    bounds = {
+        'x_bounds': (-1 + 2 * start_x / orig_nl, -1 + 2 * (end_x + 1) / orig_nl),
+        'y_bounds': (-1 + 2 * start_y / orig_nc, -1 + 2 * (end_y + 1) / orig_nc),
+        'z_bounds': (-0.5 + start_z / orig_nz, -0.5 + (end_z + 1) / orig_nz),
+        'original_shape': occ.shape,
+        'new_shape': updated_occ.shape
+    }
+    return updated_occ, bounds
+
+occupancy, occ_bounds = reduce_outside_occupancy(occupancy, 0)
+
+# Update resolution and coordinate grids based on cropped occupancy
+new_res_x, new_res_y, new_res_z = occupancy.shape
+x_min, x_max = occ_bounds['x_bounds']
+y_min, y_max = occ_bounds['y_bounds']
+z_min, z_max = occ_bounds['z_bounds']
+
+# Recreate coordinate grids for the cropped region
+step_x = (x_max - x_min) / new_res_x
+step_y = (y_max - y_min) / new_res_y
+step_z = (z_max - z_min) / new_res_z
+X, Y, Z = np.mgrid[x_min:x_max:step_x, y_min:y_max:step_y, z_min:z_max:step_z]
 
 # MLP class
 class MLP(nn.Module):
@@ -178,20 +265,40 @@ def random_coordinates(nb_points: int, dimensions: list[tuple[float | int, float
         elements.append(Xs)
     return elements
 
-def occupancy_random_points(X: np.ndarray, Y:np.ndarray, Z:np.ndarray, occupancy:np.ndarray, resolution: int) -> np.ndarray:
+def occupancy_random_points(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, 
+                            occupancy: np.ndarray, bounds: dict) -> np.ndarray:
     """
-    Convert relative positions:
-    X [-1, 1] -> [0, resolution - 1]
-    Y [-1, 1] -> [0, resolution - 1]
-    Z [-0.5, 0.5] -> [0, resolution // 2 - 1]
+    Convert relative positions to occupancy grid indices.
+    Points outside the bounds are considered unoccupied (0).
+    
+    Args:
+        X, Y, Z: coordinate arrays
+        occupancy: the cropped occupancy grid
+        bounds: dict with 'x_bounds', 'y_bounds', 'z_bounds' keys
     """
-    x_coord = ((X + 1) * (resolution - 1) / 2.).astype(np.int64)
-    y_coord = ((Y + 1) * (resolution - 1) / 2.).astype(np.int64)
-    z_coord = ((Z + 0.5) * (resolution // 2 - 1)).astype(np.int64)
-    x_coord = np.clip(x_coord, 0, resolution - 1)
-    y_coord = np.clip(y_coord, 0, resolution - 1)
-    z_coord = np.clip(z_coord, 0, resolution // 2 - 1)
+    res_x, res_y, res_z = occupancy.shape
+    x_min, x_max = bounds['x_bounds']
+    y_min, y_max = bounds['y_bounds']
+    z_min, z_max = bounds['z_bounds']
+    
+    # Normalize coordinates to [0, 1] within bounds, then scale to grid indices
+    x_coord = ((X - x_min) / (x_max - x_min) * (res_x - 1)).astype(np.int64)
+    y_coord = ((Y - y_min) / (y_max - y_min) * (res_y - 1)).astype(np.int64)
+    z_coord = ((Z - z_min) / (z_max - z_min) * (res_z - 1)).astype(np.int64)
+    
+    inside_mask = (
+        (X >= x_min) & (X < x_max) &
+        (Y >= y_min) & (Y < y_max) &
+        (Z >= z_min) & (Z < z_max)
+    )
+    
+
+    x_coord = np.clip(x_coord, 0, res_x - 1)
+    y_coord = np.clip(y_coord, 0, res_y - 1)
+    z_coord = np.clip(z_coord, 0, res_z - 1)
+    
     occupancy_rand = occupancy[x_coord, y_coord, z_coord]
+    occupancy_rand = occupancy_rand * inside_mask
     return occupancy_rand
 
 def binary_acc(y_pred, y_test):
@@ -202,17 +309,21 @@ def binary_acc(y_pred, y_test):
     return accuracy
 
 def main():
-    Xrand, Yrand, Zrand = random_coordinates(NUM_RANDOM_POINTS, [(-1,1), (-1,1), (-0.5, 0.5)])
-    # Format data for PyTorch
+    Xrand, Yrand, Zrand = random_coordinates(NUM_RANDOM_POINTS, [
+        occ_bounds['x_bounds'], 
+        occ_bounds['y_bounds'], 
+        occ_bounds['z_bounds']
+    ])
+    
     data_in = np.stack((X, Y, Z), axis=-1)
-    resolution_cube = resolution * resolution * resolution
-    data_in = np.reshape(data_in, (resolution_cube // 2, 3))
-    data_out = np.reshape(occupancy, (resolution_cube // 2, 1))
+    total_voxels = np.prod(occupancy.shape)
+    data_in = np.reshape(data_in, (total_voxels, 3))
+    data_out = np.reshape(occupancy, (total_voxels, 1))
 
     data_in_rand = np.stack((Xrand, Yrand, Zrand), axis=-1)
     data_in_rand = np.reshape(data_in_rand, (NUM_RANDOM_POINTS, 3))
 
-    data_out_rand = occupancy_random_points(Xrand, Yrand, Zrand, occupancy, resolution)
+    data_out_rand = occupancy_random_points(Xrand, Yrand, Zrand, occupancy, occ_bounds)
     data_out_rand = np.reshape(data_out_rand, (NUM_RANDOM_POINTS, 1))
 
     # Pytorch format
@@ -231,14 +342,12 @@ def main():
     outputs = mlp(data_in.float())
     occ = outputs.detach().cpu().numpy()
 
-    # Go back to 3D grid
-    newocc = np.reshape(occ, (resolution, resolution, resolution // 2))
+    newocc = np.reshape(occ, occupancy.shape)
     newocc = np.around(newocc)
 
     verts, faces, normals, values = measure.marching_cubes(newocc, 0.25)
     surf_mesh = trimesh.Trimesh(verts, faces, validate=True)
     surf_mesh.export('alimplicit.off')
-
 
 # --------- MAIN ---------
 if __name__ == "__main__":
