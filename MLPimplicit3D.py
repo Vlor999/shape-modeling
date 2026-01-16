@@ -151,10 +151,11 @@ class MLP(nn.Module):
     Multilayer Perceptron.
     """
 
-    def __init__(self):
+    def __init__(self, L):
         super().__init__()
+        self.L = L
         self.layers = nn.Sequential(
-            nn.Linear(3, 60),
+            nn.Linear(3 + 3 * 2 * L, 60), # each coordinated (3) is encoded according to the posiitonal encoding L * 2 (sin + cor) -> 3 * L * 2 + 3 (position)
             nn.Tanh(),
             nn.Linear(60, 120),
             nn.ReLU(),
@@ -178,9 +179,8 @@ print("Device: ", device)
 
     
 # MLP Training
-def nif_train(data_in, data_out, batch_size):
-    # Initialize the MLP
-    mlp = MLP()
+def nif_train(data_in, data_out, batch_size, L):
+    mlp = MLP(L)
     mlp = mlp.float()
     mlp.to(device)
 
@@ -243,27 +243,50 @@ def nif_train(data_in, data_out, batch_size):
         acc = binary_acc(outputs, data_out)
         print("Binary accuracy: ", acc)
 
-        # Training is complete.
     print('MLP trained.')
     return mlp
 
-def random_coordinates(nb_points: int, dimensions: list[tuple[float | int, float | int]]) -> list[np.ndarray]:
+def positional_encoding(coords: np.ndarray, L: int) -> np.ndarray:
     """
-    Generate the random coordinates
+    Apply positional encoding to coordinates.
+    
+    For each coordinate x, computes:
+    [x, sin(2^0 * π * x), cos(2^0 * π * x), ..., sin(2^(L-1) * π * x), cos(2^(L-1) * π * x)]
     
     Args:
-        - nb_points (int): Number of points for each list
-        - dimensions (list[tuple[int, int]]): the dimensions between we can found data
+        coords: array of shape (..., 3) containing x, y, z coordinates
+        L: number of frequency bands
+    
+    Returns:
+        array of shape (..., 3 + 3*2*L) with positional encoding
+    """
+    original_shape = coords.shape[:-1]
+    coords_flat = coords.reshape(-1, 3)
+    
+    encoded = [coords_flat]
+    for i in range(L):
+        freq = (2 ** i) * np.pi
+        encoded.append(np.sin(freq * coords_flat))
+        encoded.append(np.cos(freq * coords_flat))
+    result = np.concatenate(encoded, axis=-1)
+    return result.reshape(*original_shape, -1)
+
+
+def random_coordinates(nb_points: int, dimensions: list[tuple[float | int, float | int]]) -> np.ndarray:
+    """
+    Generate random 3D coordinates within given bounds.
+    
+    Args:
+        - nb_points (int): Number of points to generate
+        - dimensions (list[tuple]): List of (min, max) bounds for each dimension [x, y, z]
     
     Return:
-        - X_1, X_2, ..., X_n: A list of len(dimensions) elements of random points
+        - np.ndarray of shape (nb_points, 3) with random coordinates
     """
-    elements = []
-    for dim in dimensions:
-        start, stop = dim
-        Xs = np.random.uniform(start, stop, nb_points)
-        elements.append(Xs)
-    return elements
+    coords = np.zeros((nb_points, 3))
+    for i, (start, stop) in enumerate(dimensions):
+        coords[:, i] = np.random.uniform(start, stop, nb_points)
+    return coords
 
 def occupancy_random_points(X: np.ndarray, Y: np.ndarray, Z: np.ndarray, 
                             occupancy: np.ndarray, bounds: dict) -> np.ndarray:
@@ -309,36 +332,36 @@ def binary_acc(y_pred, y_test):
     return accuracy
 
 def main():
-    Xrand, Yrand, Zrand = random_coordinates(NUM_RANDOM_POINTS, [
+    L = 10
+    
+    coords_rand = random_coordinates(NUM_RANDOM_POINTS, [
         occ_bounds['x_bounds'], 
         occ_bounds['y_bounds'], 
         occ_bounds['z_bounds']
     ])
     
-    data_in = np.stack((X, Y, Z), axis=-1)
     total_voxels = np.prod(occupancy.shape)
-    data_in = np.reshape(data_in, (total_voxels, 3))
+    coords_grid = np.stack((X, Y, Z), axis=-1)
+    coords_grid = coords_grid.reshape(total_voxels, 3)
+    
+    data_in = positional_encoding(coords_grid, L)
     data_out = np.reshape(occupancy, (total_voxels, 1))
 
-    data_in_rand = np.stack((Xrand, Yrand, Zrand), axis=-1)
-    data_in_rand = np.reshape(data_in_rand, (NUM_RANDOM_POINTS, 3))
-
+    data_in_rand = positional_encoding(coords_rand, L)
+    
+    Xrand, Yrand, Zrand = coords_rand[:, 0], coords_rand[:, 1], coords_rand[:, 2]
     data_out_rand = occupancy_random_points(Xrand, Yrand, Zrand, occupancy, occ_bounds)
     data_out_rand = np.reshape(data_out_rand, (NUM_RANDOM_POINTS, 1))
 
-    # Pytorch format
     data_in = torch.from_numpy(data_in)
     data_out = torch.from_numpy(data_out)
 
-    # Pytorch format
     data_in_rand = torch.from_numpy(data_in_rand)
     data_out_rand = torch.from_numpy(data_out_rand)
 
-    # Train mlp
-    mlp = nif_train(data_in_rand, data_out_rand, BATCH_SIZE)
+    mlp = nif_train(data_in_rand, data_out_rand, BATCH_SIZE, L)
     torch.save(mlp, "MLP.pt")
-
-    # Visualization on training data
+    
     outputs = mlp(data_in.float())
     occ = outputs.detach().cpu().numpy()
 

@@ -8,8 +8,9 @@ import mlx.optimizers as optim
 from mlx.utils import tree_flatten
 
 # Training
-MAX_EPOCH = 10
-BATCH_SIZE = 10_000
+MAX_EPOCH = 20
+BATCH_SIZE = 2<<14
+print(f"Batch size: {BATCH_SIZE}")
 resolution = 300
 step = 2 / resolution
 
@@ -23,11 +24,13 @@ class MLP(nn.Module):
             nn.Tanh(),
             nn.Linear(60, 120),
             nn.ReLU(),
-            nn.Linear(120, 60),
+            nn.Linear(120, 240),
+            nn.GELU(),
+            nn.Linear(240, 150),
             nn.ReLU(),
-            nn.Linear(60, 30),
+            nn.Linear(150, 60),
             nn.ReLU(),
-            nn.Linear(30, 1),
+            nn.Linear(60, 1),
         )
 
     def __call__(self, x):
@@ -102,6 +105,8 @@ def main():
     
     try:
         occupancy = mx.load("occupancy.npy")
+        if type(occupancy) != mx.array:
+            exit(0)
     except:
         occupancy = mx.ones((data_in.shape[0], 1))
     
