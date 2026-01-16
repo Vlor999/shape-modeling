@@ -1,20 +1,21 @@
 from time import time
 import numpy as np
-import mlx.core as mx
-import mlx.nn as nn
-import mlx.optimizers as optim
 from skimage import measure
+import mlx.nn as nn
 import trimesh
+import mlx.core as mx
+import mlx.optimizers as optim
 from mlx.utils import tree_flatten
 
-# --- Paramètres ---
+# Training
 MAX_EPOCH = 10
-BATCH_SIZE = 1024  # Augmenté car MLX gère mieux les gros batchs
+BATCH_SIZE = 4096
 resolution = 300
 step = 2 / resolution
 
-# --- Modèle MLP Natif ---
+# MLP class
 class MLP(nn.Module):
+
     def __init__(self):
         super().__init__()
         self.layers = nn.Sequential(
@@ -26,22 +27,22 @@ class MLP(nn.Module):
             nn.ReLU(),
             nn.Linear(60, 30),
             nn.ReLU(),
-            nn.Linear(30, 1)
+            nn.Linear(30, 1),
         )
 
     def __call__(self, x):
         return self.layers(x)
 
-def loss_fn(model, X, y, pos_weight):
-    logits = model(X)
-    loss = nn.losses.binary_cross_entropy(logits, y, with_logits=True)
-    weighted_loss = mx.where(y == 1, loss * pos_weight, loss)
+def loss_fn(model, X, y, weights):
+    pred = model(X)
+    loss = nn.losses.binary_cross_entropy(pred, y, with_logits=True)
+    weighted_loss = mx.where(y == 1, loss * weights, loss)
     return mx.mean(weighted_loss)
 
-def train_step(model, optimizer, X, y, pos_weight):
-    loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-    loss, grads = loss_and_grad_fn(model, X, y, pos_weight)
-    optimizer.update(model, grads)
+def train_step(mlp, optimizer, batch_x, batch_y, p_weight):
+    loss_grad = nn.value_and_grad(mlp, loss_fn)
+    loss, grad = loss_grad(mlp, batch_x, batch_y, p_weight)
+    optimizer.update(mlp, grad)
     return loss
 
 def binary_acc(y_pred, y_test):
@@ -54,27 +55,30 @@ def binary_acc(y_pred, y_test):
 def nif_train(data_in, data_out, batch_size):
     mlp = MLP()
     mx.eval(mlp.parameters())
-    
     n_one = mx.sum(data_out == 1).item()
     p_weight = (data_out.shape[0] - n_one) / n_one
-    print(f"Pos. Weight: {p_weight:.4f}")
-
+    print("Pos. Weight: ", p_weight)
     optimizer = optim.Adam(learning_rate=1e-3)
 
     for epoch in range(MAX_EPOCH):
+
+        print(f'Starting epoch {epoch + 1}/{MAX_EPOCH}')
+
         permutation = mx.random.permutation(data_in.shape[0])
         data_in = data_in[permutation]
         data_out = data_out[permutation]
-
         current_loss = 0.
+
         for i in range(0, data_in.shape[0], batch_size):
             batch_x = data_in[i : i + batch_size]
             batch_y = data_out[i : i + batch_size]
 
             loss = train_step(mlp, optimizer, batch_x, batch_y, p_weight)
+
             current_loss += loss.item()
             if (i/batch_size) % 500 == 499:
-                print('Loss after mini-batch %5d: %.5f' % ((i/batch_size) + 1, current_loss / (i/batch_size) + 1))
+                print('Loss after mini-batch %5d: %.5f' %
+                      ((i/batch_size) + 1, current_loss / (i/batch_size) + 1))
 
         mx.eval(mlp.parameters(), optimizer.state)
         avg_loss = current_loss / (data_in.shape[0] // batch_size)
@@ -116,8 +120,9 @@ def main():
     surf_mesh.export('alimplicit_mlx.off')
     print("Fichier alimplicit_mlx.off généré.")
 
+
 if __name__ == "__main__":
     tic = time()
     main()
     tac = time()
-    print(tac - tic) # 1m 42s
+    print(tac - tic) # batch 4096 -> 28s

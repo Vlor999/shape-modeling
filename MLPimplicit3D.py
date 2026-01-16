@@ -39,6 +39,7 @@ calib = np.array([
 # Training
 MAX_EPOCH = 10
 BATCH_SIZE = 256
+NUM_RANDOMO_POINTS = 1000000
 
 # Build 3D grids
 # 3D Grids are of size resolution x resolution x resolution/2
@@ -46,8 +47,8 @@ resolution = 300
 step = 2 / resolution
 
 # Voxel coordinates
-grid = np.mgrid[-1:1:step, -1:1:step, -0.5:0.5:step]
-X, Y, Z = grid
+X, Y, Z = np.mgrid[-1:1:step, -1:1:step, -0.5:0.5:step]
+X_rand, Y_rand, Z_rand = X, Y, Z
 
 # # Voxel occupancy
 # occupancy = np.ndarray((resolution, resolution, resolution // 2), dtype=int)
@@ -200,9 +201,7 @@ def main():
     newocc = np.reshape(occ, (resolution, resolution, resolution // 2))
     newocc = np.around(newocc)
 
-    # Marching cubes
     verts, faces, normals, values = measure.marching_cubes(newocc, 0.25)
-    # Export in a standard file format
     surf_mesh = trimesh.Trimesh(verts, faces, validate=True)
     surf_mesh.export('alimplicit.off')
 
