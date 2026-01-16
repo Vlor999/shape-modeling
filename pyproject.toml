@@ -9,6 +9,7 @@ dependencies = [
     "mlx>=0.30.3",
     "mlx-lm>=0.29.1",
     "numpy>=2.4.1",
+    "pyglet<2",
     "scikit-image>=0.26.0",
     "torch>=2.9.1",
     "trimesh>=4.11.0",
