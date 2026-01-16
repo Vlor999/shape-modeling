@@ -161,7 +161,9 @@ with a weighting scheme during the training. A more efficient strategy for the t
 is to reduce the set of outside points before the training. Propose and implement such
 a strategy.
 5. Modify the MLP architecture to see the impact of increasing or reducing the number
-of parameters through: (i) the number of layers and (ii) the layer dimension.
+of parameters through: \
+    (i) the number of layers and\
+    (ii) the layer dimension.
 
 Going further - Improving the results:
 
