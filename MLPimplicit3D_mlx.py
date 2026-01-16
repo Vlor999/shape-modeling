@@ -9,7 +9,7 @@ from mlx.utils import tree_flatten
 
 # Training
 MAX_EPOCH = 10
-BATCH_SIZE = 4096
+BATCH_SIZE = 10_000
 resolution = 300
 step = 2 / resolution
 

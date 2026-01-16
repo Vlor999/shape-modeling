@@ -1,3 +1,5 @@
+from scipy.ndimage import map_coordinates
+from sys import exit
 from time import time
 import math as m
 import matplotlib.image as mpimg
@@ -39,7 +41,7 @@ calib = np.array([
 # Training
 MAX_EPOCH = 10
 BATCH_SIZE = 256
-NUM_RANDOMO_POINTS = 1000000
+NUM_RANDOM_POINTS = 10_000_000
 
 # Build 3D grids
 # 3D Grids are of size resolution x resolution x resolution/2
@@ -48,7 +50,6 @@ step = 2 / resolution
 
 # Voxel coordinates
 X, Y, Z = np.mgrid[-1:1:step, -1:1:step, -0.5:0.5:step]
-X_rand, Y_rand, Z_rand = X, Y, Z
 
 # # Voxel occupancy
 # occupancy = np.ndarray((resolution, resolution, resolution // 2), dtype=int)
@@ -56,7 +57,6 @@ X_rand, Y_rand, Z_rand = X, Y, Z
 # # Voxels are initially occupied then carved with silhouette information
 # occupancy.fill(1)
 occupancy = np.load("occupancy.npy")
-
 
 # MLP class
 class MLP(nn.Module):
@@ -108,7 +108,7 @@ def nif_train(data_in, data_out, batch_size):
     # loss_function = nn.CrossEntropyLoss()
 
     # sigmoid included in this loss function
-    loss_function = nn.BCEWithLogitsLoss(pos_weight=p_weight)
+    loss_function = nn.BCEWithLogitsLoss(pos_weight=p_weight) # Pour éviter les descente de gradients trop forte
     optimizer = torch.optim.SGD(mlp.parameters(), lr=1e-2)
 
     # Run the training loop
@@ -160,8 +160,40 @@ def nif_train(data_in, data_out, batch_size):
     print('MLP trained.')
     return mlp
 
+def random_coordinates(nb_points: int, dimensions: list[tuple[float | int, float | int]]) -> list[np.ndarray]:
+    """
+    Generate the random coordinates
+    
+    Args:
+        - nb_points (int): Number of points for each list
+        - dimensions (list[tuple[int, int]]): the dimensions between we can found data
+    
+    Return:
+        - X_1, X_2, ..., X_n: A list of len(dimensions) elements of random points
+    """
+    elements = []
+    for dim in dimensions:
+        start, stop = dim
+        Xs = np.random.uniform(start, stop, nb_points)
+        elements.append(Xs)
+    return elements
 
-# IOU evaluation between binary grids
+def occupancy_random_points(X: np.ndarray, Y:np.ndarray, Z:np.ndarray, occupancy:np.ndarray, resolution: int) -> np.ndarray:
+    """
+    Convert relative positions:
+    X [-1, 1] -> [0, resolution - 1]
+    Y [-1, 1] -> [0, resolution - 1]
+    Z [-0.5, 0.5] -> [0, resolution // 2 - 1]
+    """
+    x_coord = ((X + 1) * (resolution - 1) / 2.).astype(np.int64)
+    y_coord = ((Y + 1) * (resolution - 1) / 2.).astype(np.int64)
+    z_coord = ((Z + 0.5) * (resolution // 2 - 1)).astype(np.int64)
+    x_coord = np.clip(x_coord, 0, resolution - 1)
+    y_coord = np.clip(y_coord, 0, resolution - 1)
+    z_coord = np.clip(z_coord, 0, resolution // 2 - 1)
+    occupancy_rand = occupancy[x_coord, y_coord, z_coord]
+    return occupancy_rand
+
 def binary_acc(y_pred, y_test):
     y_pred_tag = torch.round(y_pred)
     correct_results_sum = (y_pred_tag == y_test).sum().float()
@@ -169,33 +201,35 @@ def binary_acc(y_pred, y_test):
     accuracy = torch.round(accuracy * 100)
     return accuracy
 
-
 def main():
-    # Generate X,Y,Z and occupancy
-    if str(device) == "mps":
-        torch.mps.empty_cache()
-        print("Cache cleaned - mps")
-    elif str(device) == "cuda":
-        torch.cuda.empty_cache()
-        print("Cache cleaned - mps")
-
+    Xrand, Yrand, Zrand = random_coordinates(NUM_RANDOM_POINTS, [(-1,1), (-1,1), (-0.5, 0.5)])
     # Format data for PyTorch
-    data_in = np.stack((X, Y, Z), axis=-1).astype(np.float32)
+    data_in = np.stack((X, Y, Z), axis=-1)
     resolution_cube = resolution * resolution * resolution
     data_in = np.reshape(data_in, (resolution_cube // 2, 3))
     data_out = np.reshape(occupancy, (resolution_cube // 2, 1))
+
+    data_in_rand = np.stack((Xrand, Yrand, Zrand), axis=-1)
+    data_in_rand = np.reshape(data_in_rand, (NUM_RANDOM_POINTS, 3))
+
+    data_out_rand = occupancy_random_points(Xrand, Yrand, Zrand, occupancy, resolution)
+    data_out_rand = np.reshape(data_out_rand, (NUM_RANDOM_POINTS, 1))
 
     # Pytorch format
     data_in = torch.from_numpy(data_in)
     data_out = torch.from_numpy(data_out)
 
+    # Pytorch format
+    data_in_rand = torch.from_numpy(data_in_rand)
+    data_out_rand = torch.from_numpy(data_out_rand)
+
     # Train mlp
-    mlp = nif_train(data_in, data_out, BATCH_SIZE)  # data_out.size()[0])
+    mlp = nif_train(data_in_rand, data_out_rand, BATCH_SIZE)
     torch.save(mlp, "MLP.pt")
 
     # Visualization on training data
     outputs = mlp(data_in.float())
-    occ = outputs.detach().cpu().numpy()  # from torch format to numpy
+    occ = outputs.detach().cpu().numpy()
 
     # Go back to 3D grid
     newocc = np.reshape(occ, (resolution, resolution, resolution // 2))
